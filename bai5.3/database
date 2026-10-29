@@ -1,0 +1,43 @@
+CREATE DATABASE IF NOT EXISTS InventoryDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE InventoryDB;
+
+-- 1. Bảng Nhà Cung Cấp
+CREATE TABLE NhaCungCap (
+    MaNCC INT AUTO_INCREMENT PRIMARY KEY,
+    TenNCC VARCHAR(150) NOT NULL,
+    DienThoai VARCHAR(15) UNIQUE,
+    DiaChi VARCHAR(255)
+) ENGINE=InnoDB;
+
+-- 2. Bảng Vật Tư (Đã sửa lại CHECK tương thích bản cũ)
+CREATE TABLE VatTu (
+    MaVatTu VARCHAR(20) PRIMARY KEY,
+    TenVatTu VARCHAR(150) NOT NULL,
+    DVT VARCHAR(20),
+    SoLuongTon DECIMAL(18,2) DEFAULT 0.00,
+    CHECK (SoLuongTon >= 0)
+) ENGINE=InnoDB;
+
+-- 3. Bảng Phiếu Kho
+CREATE TABLE PhieuKho (
+    MaPhieu INT AUTO_INCREMENT PRIMARY KEY,
+    LoaiPhieu VARCHAR(10) NOT NULL,
+    NgayLap DATETIME DEFAULT CURRENT_TIMESTAMP,
+    MaNCC INT NULL,
+    TongTien DECIMAL(18,2) DEFAULT 0.00,
+    CHECK (LoaiPhieu IN ('NHAP', 'XUAT')),
+    CONSTRAINT FK_PhieuKho_NCC FOREIGN KEY (MaNCC) REFERENCES NhaCungCap(MaNCC) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- 4. Bảng Chi Tiết Phiếu Kho
+CREATE TABLE ChiTietPhieuKho (
+    MaPhieu INT,
+    MaVatTu VARCHAR(20),
+    SoLuong DECIMAL(18,2) NOT NULL,
+    DonGia DECIMAL(18,2) NOT NULL,
+    PRIMARY KEY (MaPhieu, MaVatTu),
+    CHECK (SoLuong > 0),
+    CHECK (DonGia >= 0),
+    CONSTRAINT FK_CTPhieu_Phieu FOREIGN KEY (MaPhieu) REFERENCES PhieuKho(MaPhieu) ON DELETE CASCADE,
+    CONSTRAINT FK_CTPhieu_VatTu FOREIGN KEY (MaVatTu) REFERENCES VatTu(MaVatTu) ON DELETE RESTRICT
+) ENGINE=InnoDB;
