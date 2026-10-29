@@ -1,0 +1,306 @@
+////////
+using System;
+using System.Collections.Generic;
+using System.Windows.Forms;
+
+namespace INVENTORY
+{
+    public partial class Form1 : Form
+    {
+        // Khởi tạo đối tượng tầng nghiệp vụ xử lý
+        private KhoBUS khoBUS = new KhoBUS();
+
+        public Form1()
+        {
+            InitializeComponent();
+            cboLoaiPhieu.SelectedIndex = 0; // Mặc định hiển thị phiếu NHAP lúc chạy Form
+        }
+
+        // 1. Sự kiện thêm vật tư tạm thời vào lưới DataGridView (Chưa lưu xuống database)
+        private void btnThemVatTu_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(txtMaVatTu.Text) || string.IsNullOrEmpty(txtSoLuong.Text) || string.IsNullOrEmpty(txtDonGia.Text))
+            {
+                MessageBox.Show("Vui lòng nhập đầy đủ: Mã vật tư, số lượng và đơn giá!", "Cảnh báo thiếu thông tin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Thêm thông tin từ các ô TextBox vào các cột tương ứng trên DataGridView dgvChiTiet
+            dgvChiTiet.Rows.Add(txtMaVatTu.Text, txtSoLuong.Text, txtDonGia.Text);
+
+            // Tính toán lại tổng tiền hiển thị thời gian thực
+            TinhTongTienPhieu();
+
+            // Clear nhanh dữ liệu ô vừa nhập để chuẩn bị cho vật tư kế tiếp
+            txtMaVatTu.Clear();
+            txtSoLuong.Clear();
+            txtDonGia.Clear();
+            txtMaVatTu.Focus();
+        }
+
+        // Hàm hỗ trợ duyệt DataGridView để tính toán cộng dồn tổng tiền phiếu
+        private void TinhTongTienPhieu()
+        {
+            decimal tongTien = 0;
+            foreach (DataGridViewRow row in dgvChiTiet.Rows)
+            {
+                if (row.Cells["SoLuong"].Value != null && row.Cells["DonGia"].Value != null)
+                {
+                    decimal sl = Convert.ToDecimal(row.Cells["SoLuong"].Value);
+                    decimal dg = Convert.ToDecimal(row.Cells["DonGia"].Value);
+                    tongTien += sl * dg;
+                }
+            }
+            lblTongTien.Text = tongTien.ToString("N0") + " VND";
+        }
+
+        // 2. Sự kiện nhấn nút Lưu Phiếu Kho xuống Cơ sở dữ liệu bằng SqlTransaction
+        private void btnLuuPhieu_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                // Thu thập dữ liệu từ Giao diện đưa vào DTO Phiếu Kho
+                PhieuKhoDTO phieu = new PhieuKhoDTO();
+                phieu.LoaiPhieu = cboLoaiPhieu.Text;
+                phieu.NgayLap = dtpNgayLap.Value;
+                phieu.MaNCC = string.IsNullOrEmpty(txtMaNCC.Text) ? (int?)null : int.Parse(txtMaNCC.Text);
+
+                // Định dạng lại chuỗi tổng tiền thành dạng số thuần túy để lưu
+                string cleanAmount = lblTongTien.Text.Replace(" VND", "").Replace(",", "").Replace(".", "");
+                phieu.TongTien = decimal.Parse(cleanAmount);
+
+                // Thu thập danh sách chi tiết vật tư từ lưới DataGridView
+                List<ChiTietPhieuKhoDTO> dsChiTiet = new List<ChiTietPhieuKhoDTO>();
+                foreach (DataGridViewRow row in dgvChiTiet.Rows)
+                {
+                    if (row.Cells["MaVatTu"].Value != null)
+                    {
+                        dsChiTiet.Add(new ChiTietPhieuKhoDTO()
+                        {
+                            MaVatTu = row.Cells["MaVatTu"].Value.ToString(),
+                            SoLuong = Convert.ToDecimal(row.Cells["SoLuong"].Value),
+                            DonGia = Convert.ToDecimal(row.Cells["DonGia"].Value)
+                        });
+                    }
+                }
+
+                // Gửi thông tin sang tầng BUS xử lý đồng bộ giao dịch kho
+                string msgError;
+                bool ketQua = khoBUS.LuuPhieuKhoHethong(phieu, dsChiTiet, out msgError);
+
+                if (ketQua)
+                {
+                    MessageBox.Show("Xử lý giao dịch kho thành công! Số lượng tồn kho đa bảng đã được cập nhật.", "Thành công", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    dgvChiTiet.Rows.Clear(); // Xóa sạch dữ liệu cũ trên lưới sau khi lưu xong
+                    lblTongTien.Text = "0";
+                    txtMaNCC.Clear();
+                }
+                else
+                {
+                    // Thông báo lỗi nếu hệ thống thực hiện Rollback (Ví dụ: Không đủ hàng xuất)
+                    MessageBox.Show(msgError, "Giao dịch thất bại (Đã Rollback hệ thống)", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Lỗi định dạng dữ liệu đầu vào: " + ex.Message, "Cảnh báo lỗi nhập liệu", MessageBoxButtons.OK, MessageBoxIcon.Stop);
+            }
+        }
+
+        // 3. Sự kiện tính tổng trị giá tồn kho bằng lệnh ExecuteScalar
+        private void btnTinhTongKho_Click(object sender, EventArgs e)
+        {
+            decimal tongKho = khoBUS.LayTongTriGiaTon();
+            MessageBox.Show($"Tổng giá trị hàng hóa hiện đang tồn kho là:\n{tongKho.ToString("N2")} VND", "Báo cáo giá trị tồn kho", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+}
+/////////
+using System;
+using System.Collections.Generic;
+using System.Data;
+using MySql.Data.MySqlClient; // Giữ nguyên thư viện MySQL theo hệ thống XAMPP của bạn
+
+namespace INVENTORY
+{
+    public class DbConnectionData
+    {
+        public static string ConnectionString { get; } = "Server=localhost;Database=InventoryDB;Uid=root;Pwd=;";
+    }
+
+    public class KhoDAL
+    {
+        public bool ThucHienGiaoDichKho(PhieuKhoDTO phieu, List<ChiTietPhieuKhoDTO> dsChiTiet, out string errorMsg)
+        {
+            errorMsg = string.Empty;
+
+            // Sử dụng khối using để tự động giải phóng kết nối một cách an toàn nhất
+            using (MySqlConnection conn = new MySqlConnection(DbConnectionData.ConnectionString))
+            {
+                conn.Open();
+                // Khởi tạo MySqlTransaction 
+                MySqlTransaction trans = conn.BeginTransaction();
+
+                try
+                {
+                    // Bước 1: Chèn bản ghi vào bảng PhieuKho và lấy Id vừa sinh bằng LAST_INSERT_ID()
+                    string queryPhieu = @"INSERT INTO PhieuKho (LoaiPhieu, NgayLap, MaNCC, TongTien) 
+                                          VALUES (@LoaiPhieu, @NgayLap, @MaNCC, @TongTien);
+                                          SELECT LAST_INSERT_ID();";
+
+                    int maPhieuMoi;
+                    using (MySqlCommand cmdPhieu = new MySqlCommand(queryPhieu, conn, trans))
+                    {
+                        cmdPhieu.Parameters.AddWithValue("@LoaiPhieu", phieu.LoaiPhieu);
+                        cmdPhieu.Parameters.AddWithValue("@NgayLap", phieu.NgayLap);
+                        cmdPhieu.Parameters.AddWithValue("@MaNCC", (object)phieu.MaNCC ?? DBNull.Value);
+                        cmdPhieu.Parameters.AddWithValue("@TongTien", phieu.TongTien);
+                        maPhieuMoi = Convert.ToInt32(cmdPhieu.ExecuteScalar());
+                    }
+
+                    // Bước 2: Duyệt danh sách chi tiết để chèn và cập nhật số lượng tồn kho
+                    foreach (var item in dsChiTiet)
+                    {
+                        // 2.1 Chèn dữ liệu vào bảng ChiTietPhieuKho
+                        string queryCT = @"INSERT INTO ChiTietPhieuKho (MaPhieu, MaVatTu, SoLuong, DonGia) 
+                                           VALUES (@MaPhieu, @MaVatTu, @SoLuong, @DonGia)";
+                        using (MySqlCommand cmdCT = new MySqlCommand(queryCT, conn, trans))
+                        {
+                            cmdCT.Parameters.AddWithValue("@MaPhieu", maPhieuMoi);
+                            cmdCT.Parameters.AddWithValue("@MaVatTu", item.MaVatTu);
+                            cmdCT.Parameters.AddWithValue("@SoLuong", item.SoLuong);
+                            cmdCT.Parameters.AddWithValue("@DonGia", item.DonGia);
+                            cmdCT.ExecuteNonQuery();
+                        }
+
+                        // 2.2 Cập nhật biến động số lượng tồn của bảng VatTu
+                        string queryUpdateKho = phieu.LoaiPhieu == "NHAP"
+                            ? "UPDATE VatTu SET SoLuongTon = SoLuongTon + @SoLuong WHERE MaVatTu = @MaVatTu"
+                            : "UPDATE VatTu SET SoLuongTon = SoLuongTon - @SoLuong WHERE MaVatTu = @MaVatTu";
+
+                        using (MySqlCommand cmdUpdate = new MySqlCommand(queryUpdateKho, conn, trans))
+                        {
+                            cmdUpdate.Parameters.AddWithValue("@SoLuong", item.SoLuong);
+                            cmdUpdate.Parameters.AddWithValue("@MaVatTu", item.MaVatTu);
+                            cmdUpdate.ExecuteNonQuery();
+                        }
+                    }
+
+                    // Bước 3: KIỂM TRA ĐỒNG LOẠT TỒN KHO SAU KHI CẬP NHẬT (Sửa lỗi logic cộng dồn của bạn)
+                    // Nếu phiếu XUẤT làm cho SoLuongTon của bất kỳ vật tư nào bị âm (< 0), hệ thống sẽ chặn đứng ngay
+                    if (phieu.LoaiPhieu == "XUAT")
+                    {
+                        string queryCheckTon = @"SELECT v.MaVatTu, v.TenVatTu, v.SoLuongTon 
+                                                 FROM VatTu v 
+                                                 WHERE v.MaVatTu IN (SELECT DISTINCT MaVatTu FROM ChiTietPhieuKho WHERE MaPhieu = @MaPhieu)
+                                                   AND v.SoLuongTon < 0";
+
+                        using (MySqlCommand cmdCheck = new MySqlCommand(queryCheckTon, conn, trans))
+                        {
+                            cmdCheck.Parameters.AddWithValue("@MaPhieu", maPhieuMoi);
+                            using (MySqlDataReader reader = cmdCheck.ExecuteReader())
+                            {
+                                if (reader.HasRows)
+                                {
+                                    string danhSachLoi = "";
+                                    while (reader.Read())
+                                    {
+                                        danhSachLoi += $"\n- Vật tư [{reader["MaVatTu"]}] {reader["TenVatTu"]} không đủ hàng xuất! (Thiếu hụt sau khi trừ)";
+                                    }
+                                    throw new Exception("Không đủ hàng trong kho!" + danhSachLoi);
+                                }
+                            }
+                        }
+                    }
+
+                    // Toàn bộ các bước kiểm tra thành công hợp lệ -> Commit xác nhận lưu vĩnh viễn
+                    trans.Commit();
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    // Hoàn nguyên (Rollback) toàn bộ dữ liệu về trạng thái cũ nếu gặp lỗi
+                    if (trans != null) trans.Rollback();
+                    errorMsg = ex.Message;
+                    return false;
+                }
+            }
+        }
+
+        // 3. Sử dụng ExecuteScalar tính tổng giá trị hàng hóa đang tồn kho (Giữ nguyên hàm IFNULL của MySQL)
+        public decimal TinhTongTriGiaTonKho()
+        {
+            using (MySqlConnection conn = new MySqlConnection(DbConnectionData.ConnectionString))
+            {
+                string query = @"SELECT IFNULL(SUM(v.SoLuongTon * 
+                                 IFNULL((SELECT ct.DonGia FROM ChiTietPhieuKho ct WHERE ct.MaVatTu = v.MaVatTu ORDER BY ct.MaPhieu DESC LIMIT 1), 0)), 0) 
+                                 FROM VatTu v";
+
+                using (MySqlCommand cmd = new MySqlCommand(query, conn))
+                {
+                    conn.Open();
+                    object res = cmd.ExecuteScalar();
+                    return Convert.ToDecimal(res);
+                }
+            }
+        }
+    }
+}
+///////
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace INVENTORY
+{
+    // Đổi thành public để các tầng khác có thể gọi tới
+    public class PhieuKhoDTO
+    {
+        public int MaPhieu { get; set; }
+        public string LoaiPhieu { get; set; }
+        public DateTime NgayLap { get; set; }
+        public int? MaNCC { get; set; }
+        public decimal TongTien { get; set; }
+    }
+
+    public class ChiTietPhieuKhoDTO
+    {
+        public int MaPhieu { get; set; }
+        public string MaVatTu { get; set; }
+        public decimal SoLuong { get; set; }
+        public decimal DonGia { get; set; }
+    }
+}
+////////
+using System;
+using System.Collections.Generic;
+
+namespace INVENTORY
+{
+    public class KhoBUS
+    {
+        private KhoDAL khoDAL = new KhoDAL();
+
+        public decimal LayTongTriGiaTon()
+        {
+            return khoDAL.TinhTongTriGiaTonKho();
+        }
+
+        public bool LuuPhieuKhoHethong(PhieuKhoDTO phieu, List<ChiTietPhieuKhoDTO> dsChiTiet, out string msg)
+        {
+            // Kiểm tra các ràng buộc logic nghiệp vụ trước khi gọi tầng DAL
+            if (dsChiTiet == null || dsChiTiet.Count == 0)
+            {
+                msg = "Lỗi nghiệp vụ: Danh sách chi tiết vật tư trong phiếu đang trống.";
+                return false;
+            }
+            if (phieu.LoaiPhieu == "NHAP" && (phieu.MaNCC == null || phieu.MaNCC <= 0))
+            {
+                msg = "Lỗi nghiệp vụ: Phiếu nhập kho bắt buộc phải chọn mã Nhà Cung Cấp.";
+                return false;
+            }
+
+            return khoDAL.ThucHienGiaoDichKho(phieu, dsChiTiet, out msg);
+        }
+    }
+}
